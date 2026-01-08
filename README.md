@@ -12,39 +12,36 @@ This project implements a "Chat with Your Docs" application that can answer ques
 
 ```mermaid
 graph TB
-    subgraph "Input Layer"
+    subgraph "Input"
         PDF[PDF Documents]
         USER[User Queries]
     end
     
-    subgraph "Ingestion Pipeline"
-        LOADER[PDF Loader<br/>Text & Table Extraction]
-        CLEANER[Text Cleaner<br/>Normalization]
-        CHUNKER[Document Chunker<br/>Configurable Strategy]
-        EMBED[Embedding Model<br/>text-embedding-3-small]
-        VDB[(ChromaDB<br/>Vector Store)]
+    subgraph "Ingestion"
+        LOADER[PDF Loader]
+        CHUNKER[Chunker]
+        EMBED[Embeddings]
+        VDB[(ChromaDB)]
     end
     
-    subgraph "RAG System"
-        RETRIEVER[Retriever<br/>Top-K + Threshold + Re-ranking]
-        PROMPT[Prompt Builder<br/>Context Management]
-        LLM[LLM Generator<br/>gpt-4o-mini]
-        GUARD[Guardrails<br/>Safety & Quality Checks]
+    subgraph "RAG Pipeline"
+        RETRIEVER[Retriever]
+        PROMPT[Prompt Builder]
+        LLM[LLM Generator]
+        GUARD[Guardrails]
     end
     
-    subgraph "API Layer"
-        API[FastAPI Server<br/>REST Endpoints]
-        CLI[CLI Interface]
+    subgraph "Interface"
+        API[FastAPI]
+        CLI[CLI]
     end
     
-    subgraph "Quality & Evaluation"
-        QC[Quality Checker<br/>Metrics & Validation]
-        EVAL[Evaluation<br/>Answer Quality]
+    subgraph "Quality"
+        QC[Quality Checker]
     end
     
     PDF --> LOADER
-    LOADER --> CLEANER
-    CLEANER --> CHUNKER
+    LOADER --> CHUNKER
     CHUNKER --> EMBED
     EMBED --> VDB
     
@@ -59,7 +56,6 @@ graph TB
     GUARD --> QC
     GUARD --> API
     GUARD --> CLI
-    QC --> EVAL
 ```
 
 ### Architecture Overview
@@ -119,49 +115,6 @@ The system follows a modular, layered architecture with clear separation of conc
    User Query → Retriever → Vector Store → Context Documents
    → Prompt Builder → LLM → Guardrails → Quality Check → Response
    ```
-
-### Component Interactions
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant API as API Server
-    participant R as Retriever
-    participant VDB as Vector Store
-    participant P as Prompt Builder
-    participant LLM as LLM
-    participant G as Guardrails
-    participant QC as Quality Checker
-    
-    U->>API: POST /chat {query}
-    API->>R: retrieve(query)
-    R->>VDB: similarity_search(query)
-    VDB-->>R: relevant_docs
-    R->>R: filter_by_threshold()
-    R->>R: rerank()
-    R-->>API: context_docs
-    
-    API->>P: build_prompt(query, context_docs)
-    P->>P: truncate_context()
-    P-->>API: prompt
-    
-    API->>LLM: generate(prompt)
-    LLM-->>API: answer
-    
-    API->>G: check_relevance()
-    G-->>API: relevance_check
-    
-    API->>G: validate_response()
-    G-->>API: validation
-    
-    API->>QC: evaluate_quality()
-    QC-->>API: metrics
-    
-    API->>G: add_source_attribution()
-    G-->>API: final_answer
-    
-    API-->>U: {answer, sources, metadata}
-```
 
 ## 🔧 Technical Architecture & Implementation Decisions
 
