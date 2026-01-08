@@ -81,11 +81,11 @@ The system follows a modular, layered architecture with clear separation of conc
 - **Prompt Builder** (`prompt.py`):
   - Constructs prompts with context
   - Manages token limits and truncation
-  - Handles few-shot examples
+  - Handles optional few-shot examples
 - **LLM Generator** (`generator.py`):
   - Generates answers using OpenAI GPT models
-  - Manages context window
-  - Handles streaming responses
+  - Manages context window and max tokens (1000)
+  - Supports streaming responses
 - **Guardrails** (`guardrails.py`):
   - Relevance checking
   - Ambiguous query detection
@@ -210,12 +210,13 @@ All chunking parameters are configurable via `app/config.py`:
   - Sufficient context window (128k tokens)
   - Good instruction following
   - Temperature: 0.1 for factual, consistent responses
+  - Max tokens: 1000 (configurable in `app/config.py`)
 
 ### Retrieval Approach
 
 **Strategy:**
-- **Top-K:** 5 documents (configurable)
-- **Similarity Threshold:** 0.6 (filters low-relevance results)
+- **Top-K:** 15 documents (configurable, default in `app/config.py`)
+- **Similarity Threshold:** 0.3 (filters low-relevance results, optimized for L2 distance conversion)
 - **Re-ranking:** Enabled (combines similarity + content length)
 
 **Implementation:**
@@ -228,7 +229,7 @@ All chunking parameters are configurable via `app/config.py`:
 **Rationale:**
 - Similarity threshold prevents low-quality context
 - Re-ranking improves answer quality by preferring detailed chunks
-- Top-k=5 balances context richness with token limits
+- Top-k=15 captures range information that may be ranked lower
 
 ### Prompt Engineering
 
@@ -380,7 +381,7 @@ API will be available at `http://localhost:8000`
 ```bash
 curl -X POST "http://localhost:8000/chat" \
   -H "Content-Type: application/json" \
-  -d '{"query": "What is normal cholesterol?", "top_k": 5}'
+  -d '{"query": "What is normal cholesterol?", "top_k": 15}'
 ```
 
 #### 4. Docker Deployment
