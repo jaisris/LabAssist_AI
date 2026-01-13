@@ -17,7 +17,12 @@ def test_end_to_end_retrieval():
     from app.rag.retriever import RAGRetriever
     
     vector_store = load_vector_store()
-    retriever = RAGRetriever(vector_store, top_k=3, similarity_threshold=0.5)
+    retriever = RAGRetriever(
+        vector_store, 
+        top_k=3, 
+        similarity_threshold=0.5,
+        enable_reranking=False
+    )
     
     query = "What is normal cholesterol?"
     results = retriever.retrieve(query)
@@ -35,7 +40,11 @@ def test_end_to_end_generation():
     from app.rag.generator import RAGGenerator
     
     vector_store = load_vector_store()
-    retriever = RAGRetriever(vector_store, top_k=3)
+    retriever = RAGRetriever(
+        vector_store, 
+        top_k=3,
+        enable_reranking=False
+    )
     generator = RAGGenerator(retriever, model_name="gpt-4o-mini")
     
     query = "What is cholesterol?"

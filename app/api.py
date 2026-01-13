@@ -4,9 +4,17 @@ from pydantic import BaseModel
 from typing import Optional, List
 from contextlib import asynccontextmanager
 import os
+import logging
 from dotenv import load_dotenv
 
 from app.rag import initialize_rag_components, process_chat_query
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -24,15 +32,18 @@ async def lifespan(app: FastAPI):
     global vector_store, retriever, generator, guardrails
     
     # Startup: Initialize RAG components
+    logger.info("Initializing RAG components...")
     try:
         vector_store, retriever, generator, guardrails = initialize_rag_components()
+        logger.info("RAG components initialized successfully")
     except Exception as e:
-        print(f"Error initializing components: {e}")
+        logger.error(f"Error initializing components: {e}", exc_info=True)
         raise
     
     yield  # Application runs here
     
     # Shutdown: Cleanup (if needed)
+    logger.info("Shutting down API server...")
     # Currently no cleanup needed, but can be added here
 
 
@@ -93,28 +104,41 @@ async def chat(request: ChatRequest):
         Chat response with answer, sources, and metadata
     """
     if not generator:
+        logger.error("RAG system not initialized")
         raise HTTPException(status_code=503, detail="RAG system not initialized")
     
     query = request.query.strip()
     
     if not query:
+        logger.warning("Empty query received")
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     
-    # Process query using shared function
-    result = process_chat_query(
-        query=query,
-        generator=generator,
-        guardrails=guardrails,
-        top_k=request.top_k,
-        include_sources=request.include_sources
-    )
+    logger.info(f"Processing chat request: query='{query[:100]}...', top_k={request.top_k}")
     
-    return ChatResponse(
-        answer=result["answer"],
-        sources=result["sources"],
-        metadata=result["metadata"],
-        guardrails=result["guardrails"]
-    )
+    # Process query using shared function
+    try:
+        result = process_chat_query(
+            query=query,
+            generator=generator,
+            guardrails=guardrails,
+            top_k=request.top_k,
+            include_sources=request.include_sources
+        )
+        
+        logger.info(
+            f"Chat request completed: retrieved_docs={result['metadata'].get('retrieved_docs', 0)}, "
+            f"is_relevant={result.get('is_relevant', False)}"
+        )
+        
+        return ChatResponse(
+            answer=result["answer"],
+            sources=result["sources"],
+            metadata=result["metadata"],
+            guardrails=result["guardrails"]
+        )
+    except Exception as e:
+        logger.error(f"Error processing chat request: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
 
 @app.get("/")

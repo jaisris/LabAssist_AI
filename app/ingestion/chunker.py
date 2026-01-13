@@ -2,15 +2,22 @@ from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
     CharacterTextSplitter
 )
+from langchain_experimental.text_splitter import SemanticChunker
 from langchain_core.documents import Document
 from typing import List, Optional
+import logging
 
 from app.config import (
     CHUNKING_STRATEGY,
     CHUNK_SIZE,
     CHUNK_OVERLAP,
-    CHUNK_SEPARATORS
+    CHUNK_SEPARATORS,
+    EMBEDDING_MODEL,
+    SEMANTIC_CHUNK_BREAKPOINT_THRESHOLD_TYPE,
+    SEMANTIC_CHUNK_BREAKPOINT_THRESHOLD_AMOUNT
 )
+
+logger = logging.getLogger(__name__)
 
 
 def build_documents(text: str, metadata: dict) -> list[Document]:
@@ -48,7 +55,33 @@ def get_text_splitter(
     chunk_overlap = chunk_overlap or CHUNK_OVERLAP
     separators = separators or CHUNK_SEPARATORS
     
-    if strategy == "recursive_character":
+    if strategy == "semantic":
+        # Semantic chunking uses embeddings to group semantically similar sentences
+        # This preserves semantic coherence better than fixed-size chunking
+        from app.ingestion.indexer import get_embeddings
+        
+        logger.info(
+            f"Initializing semantic chunker with embedding model: {EMBEDDING_MODEL}, "
+            f"threshold_type={SEMANTIC_CHUNK_BREAKPOINT_THRESHOLD_TYPE}, "
+            f"threshold_amount={SEMANTIC_CHUNK_BREAKPOINT_THRESHOLD_AMOUNT}"
+        )
+        embeddings = get_embeddings()
+        
+        # SemanticChunker parameters:
+        # - breakpoint_threshold_type: "percentile" or "standard_deviation"
+        #   - "percentile": Uses percentile of similarity distribution (recommended)
+        #   - "standard_deviation": Uses standard deviation from mean similarity
+        # - breakpoint_threshold_amount: threshold value
+        #   - For percentile: 75 means 75th percentile (groups top 25% similar sentences)
+        #   - For standard_deviation: typically 0.5-1.5
+        # - add_start_index: whether to add start index to metadata
+        return SemanticChunker(
+            embeddings=embeddings,
+            breakpoint_threshold_type=SEMANTIC_CHUNK_BREAKPOINT_THRESHOLD_TYPE,
+            breakpoint_threshold_amount=SEMANTIC_CHUNK_BREAKPOINT_THRESHOLD_AMOUNT,
+            add_start_index=True  # Add start index for better tracking
+        )
+    elif strategy == "recursive_character":
         return RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -67,7 +100,7 @@ def get_text_splitter(
     else:
         raise ValueError(
             f"Unsupported chunking strategy: {strategy}. "
-            f"Supported strategies: 'recursive_character', 'character'"
+            f"Supported strategies: 'semantic', 'recursive_character', 'character'"
         )
 
 
@@ -92,6 +125,22 @@ def chunk_documents(
     Returns:
         List of chunks with metadata
     """
+    effective_chunk_size = chunk_size or CHUNK_SIZE
+    effective_overlap = overlap or CHUNK_OVERLAP
+    effective_strategy = strategy or CHUNKING_STRATEGY
+    
+    if effective_strategy == "semantic":
+        logger.info(
+            f"Chunking {len(documents)} document(s) with strategy='{effective_strategy}' "
+            f"(semantic chunking uses embeddings to group similar sentences, "
+            f"reference chunk_size={effective_chunk_size})"
+        )
+    else:
+        logger.info(
+            f"Chunking {len(documents)} document(s) with strategy='{effective_strategy}', "
+            f"chunk_size={effective_chunk_size}, overlap={effective_overlap}"
+        )
+    
     splitter = get_text_splitter(
         strategy=strategy,
         chunk_size=chunk_size,
@@ -100,5 +149,26 @@ def chunk_documents(
     )
 
     chunked_docs = splitter.split_documents(documents)
-
+    
+    # Log chunking statistics
+    if chunked_docs:
+        chunk_lengths = [len(doc.page_content) for doc in chunked_docs]
+        avg_length = sum(chunk_lengths) / len(chunk_lengths)
+        min_length = min(chunk_lengths)
+        max_length = max(chunk_lengths)
+        
+        logger.info(
+            f"Chunking complete: {len(chunked_docs)} chunks created, "
+            f"length stats: avg={avg_length:.0f}, min={min_length}, max={max_length}"
+        )
+        
+        # Log sample chunk for validation
+        if logger.isEnabledFor(logging.DEBUG):
+            sample_chunk = chunked_docs[0]
+            logger.debug(
+                f"Sample chunk: length={len(sample_chunk.page_content)}, "
+                f"metadata={sample_chunk.metadata}, "
+                f"preview='{sample_chunk.page_content[:100]}...'"
+            )
+    
     return chunked_docs

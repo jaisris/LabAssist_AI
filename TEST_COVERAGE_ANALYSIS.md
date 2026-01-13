@@ -95,8 +95,9 @@
    - Use appropriate fixtures and mock data
 
 2. **Retriever Tests**:
-   - ✅ **Fixed**: `test_retrieve_with_threshold` - Corrected similarity calculation (1/(1+distance))
+   - ✅ **Fixed**: `test_retrieve_with_threshold` - Updated similarity calculation to current formula (1 - (distance² / 4))
    - Tests initialization, threshold filtering, and re-ranking correctly
+   - ✅ **Updated**: Added `enable_reranking` parameter to all retriever initializations
 
 3. **Quality Checks Tests**:
    - Comprehensive coverage of quality evaluation metrics

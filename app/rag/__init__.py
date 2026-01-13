@@ -2,6 +2,9 @@
 RAG system initialization utilities and shared query processing.
 """
 from typing import Optional
+import time
+import logging
+
 from app.ingestion.indexer import load_vector_store
 from app.rag.retriever import RAGRetriever
 from app.rag.generator import RAGGenerator
@@ -15,6 +18,8 @@ from app.config import (
     LLM_MAX_TOKENS,
     MIN_RELEVANCE_SCORE
 )
+
+logger = logging.getLogger(__name__)
 
 
 def initialize_rag_components():
@@ -75,16 +80,24 @@ def process_chat_query(
     Returns:
         Dictionary with answer, sources, metadata, and guardrails info
     """
+    # Start timing
+    start_time = time.perf_counter()
+    
     # Guardrails checks
     ambiguity_check = guardrails.check_ambiguous_query(query)
     emergency_check = guardrails.check_medical_emergency(query)
     
     # If query is ambiguous, return early
     if ambiguity_check.get("is_ambiguous"):
+        total_time = time.perf_counter() - start_time
         return {
             "answer": guardrails.get_fallback_response(query, {}, ambiguity_check),
             "sources": [],
-            "metadata": {"query": query, "reason": "ambiguous_query"},
+            "metadata": {
+                "query": query,
+                "reason": "ambiguous_query",
+                "total_time_seconds": total_time
+            },
             "guardrails": {
                 "ambiguity_check": ambiguity_check,
                 "emergency_check": emergency_check
@@ -122,6 +135,9 @@ def process_chat_query(
     # Validate response
     validation = guardrails.validate_response(result["answer"])
     
+    # Calculate total time
+    total_time = time.perf_counter() - start_time
+    
     # Add guardrails info to metadata
     result["metadata"]["guardrails"] = {
         "relevance_check": relevance_check,
@@ -129,6 +145,9 @@ def process_chat_query(
         "emergency_check": emergency_check,
         "validation": validation
     }
+    
+    # Add total time to metadata
+    result["metadata"]["total_time_seconds"] = total_time
     
     return {
         "answer": result["answer"],

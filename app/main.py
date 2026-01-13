@@ -5,6 +5,7 @@ Can be used as CLI or to run the API server.
 import argparse
 import sys
 import warnings
+import logging
 from pathlib import Path
 
 from app.ingestion.loader import extract_text_and_tables, clean_text
@@ -12,6 +13,15 @@ from app.ingestion.chunker import build_documents, chunk_documents
 from app.ingestion.indexer import build_vector_store, load_vector_store
 from app.rag import initialize_rag_components, process_chat_query
 from app.config import DATA_DIR
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 # Suppress known benign PDF font warnings from pdfplumber
 warnings.filterwarnings(
@@ -136,6 +146,11 @@ def run_chat_cli():
                 # if result["sources"]:
                 #     sources = list(dict.fromkeys(s.get("source", "Unknown") for s in result["sources"]))
                 #     print(f"\nSources: {', '.join(sources)}")
+            
+            # Display timing
+            total_time = result.get("metadata", {}).get("total_time_seconds", 0)
+            if total_time > 0:
+                print(f"\n  Query processing time: {total_time:.2f}s")
         
         except KeyboardInterrupt:
             print("\nGoodbye!")

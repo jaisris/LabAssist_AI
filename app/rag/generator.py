@@ -4,9 +4,12 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
+import logging
 
 from app.rag.prompt import PromptBuilder
 from app.rag.retriever import RAGRetriever
+
+logger = logging.getLogger(__name__)
 
 
 class RAGGenerator:
@@ -66,10 +69,13 @@ class RAGGenerator:
         Returns:
             Dictionary with answer, sources, and metadata
         """
+        logger.info(f"Generating answer for query: '{query[:100]}...'")
+        
         # Retrieve relevant documents
         context_docs = self.retriever.retrieve(query, top_k=top_k)
         
         if not context_docs:
+            logger.warning(f"No documents retrieved for query: '{query[:50]}...'")
             return {
                 "answer": "I couldn't find any relevant information in the documents to answer your question. Please try rephrasing your query or consult a healthcare professional.",
                 "sources": [],
@@ -79,11 +85,16 @@ class RAGGenerator:
                 }
             }
         
+        logger.info(f"Retrieved {len(context_docs)} context documents")
+        
         # Truncate context if needed
+        original_count = len(context_docs)
         context_docs = self.prompt_builder.truncate_context(
             context_docs,
             self.prompt_builder.max_context_tokens
         )
+        if len(context_docs) < original_count:
+            logger.debug(f"Context truncated: {original_count} -> {len(context_docs)} documents")
         
         # Build prompt
         prompt = self.prompt_builder.build_prompt(
@@ -92,11 +103,15 @@ class RAGGenerator:
             include_examples=include_examples
         )
         
+        logger.debug(f"Prompt built, generating response with model: {self.llm.model_name}")
+        
         # Create chain
         chain = prompt | self.llm | self.output_parser
         
         # Generate response
         answer = chain.invoke({})
+        
+        logger.info(f"Generated answer: {len(answer)} characters, {len(answer.split())} words")
         
         # Extract sources
         sources = []
@@ -109,6 +124,8 @@ class RAGGenerator:
                 }
                 if source_info not in sources:
                     sources.append(source_info)
+        
+        logger.debug(f"Extracted {len(sources)} unique sources")
         
         result_dict = {
             "answer": answer,

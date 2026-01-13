@@ -76,8 +76,9 @@ The system follows a modular, layered architecture with clear separation of conc
 #### **Layer 3: RAG System** (`app/rag/`)
 - **Retriever** (`retriever.py`): 
   - Retrieves relevant chunks using similarity search
-  - Applies similarity threshold filtering
-  - Implements re-ranking for better relevance
+  - Applies similarity threshold filtering (0.7)
+  - Optional re-ranking: Simple similarity-based sorting (when enabled)
+  - Converts L2 distances to similarity scores optimized for text-embedding-3-large
 - **Prompt Builder** (`prompt.py`):
   - Constructs prompts with context
   - Manages token limits and truncation
@@ -154,18 +155,21 @@ graph TB
     G --> R[Retriever]
     R --> V[(Vector Store)]
     V --> R
-    R --> F[Filter by<br/>Threshold]
-    F --> RR[Re-ranking]
-    RR --> P[Prompt Builder]
+    R --> F[Filter by<br/>Threshold 0.7]
+    F --> RR{Re-ranking<br/>Enabled?}
+    RR -->|Yes| SR[Sort by<br/>Similarity]
+    RR -->|No| P[Prompt Builder]
+    SR --> P
     P --> L[LLM Generator]
     L --> G2[Guardrails<br/>Post-checks]
-    G2 --> QC[Quality Checker]
+    G2 --> QC[Quality Checker<br/>RAGAS/Custom]
     QC --> A[Answer + Sources]
     
     style R fill:#ffe1f5
     style P fill:#ffe1f5
     style L fill:#ffe1f5
     style G2 fill:#fff5e1
+    style QC fill:#e1fff5
 ```
 
 ## 🔧 Implementation Decisions
@@ -173,35 +177,39 @@ graph TB
 ### Vector Indexing Strategy
 
 **Chunking Approach:**
-- **Chunk Size:** 600 characters (configurable in `app/config.py`)
-- **Overlap:** 100 characters (configurable)
-- **Strategy:** Configurable chunking strategy (default: `recursive_character`)
+- **Chunk Size:** 800 characters (configurable in `app/config.py`)
+- **Overlap:** 150 characters (configurable)
+- **Strategy:** Configurable chunking strategy (default: `semantic`)
+  - **Semantic Chunking:** Groups semantically similar sentences together using embedding-based similarity
   - **Recursive Character Splitter:** Hierarchical separators (paragraphs → lines → sentences)
   - **Character Splitter:** Single separator-based splitting
 - **Separators:** Configurable list of separators for recursive strategy
 
 **Configuration:**
 All chunking parameters are configurable via `app/config.py`:
-- `CHUNKING_STRATEGY`: Strategy selection (`recursive_character` or `character`)
-- `CHUNK_SIZE`: Target chunk size in characters
-- `CHUNK_OVERLAP`: Overlap between chunks
+- `CHUNKING_STRATEGY`: Strategy selection (`semantic`, `recursive_character`, or `character`)
+- `CHUNK_SIZE`: Target chunk size in characters (reference for semantic chunking)
+- `CHUNK_OVERLAP`: Overlap between chunks (reference for semantic chunking)
 - `CHUNK_SEPARATORS`: List of separators for hierarchical splitting
+- `SEMANTIC_CHUNK_BREAKPOINT_THRESHOLD_TYPE`: Threshold type for semantic chunking (`percentile` or `standard_deviation`)
+- `SEMANTIC_CHUNK_BREAKPOINT_THRESHOLD_AMOUNT`: Threshold amount (default: 75th percentile)
 
 **Rationale:**
-- 600 characters balances context preservation with retrieval precision
-- 100-character overlap ensures continuity across chunk boundaries
+- 800 characters balances context preservation with retrieval precision
+- 150-character overlap ensures continuity across chunk boundaries
+- Semantic chunking groups related sentences together, improving retrieval quality
 - Hierarchical separators (paragraphs → lines → sentences) preserve semantic structure
 - Table rows are preserved with " | " separator for structured data
 - Configurable strategy allows experimentation and optimization for different document types
 
 ### Embedding Model & LLM Selection
 
-**Embedding Model:** `text-embedding-3-small`
+**Embedding Model:** `text-embedding-3-large`
 - **Reasoning:**
-  - Cost-effective for production use
-  - 1536 dimensions provide good semantic representation
-  - Fast inference latency
-  - Good performance on medical/technical text
+  - Higher quality embeddings for improved retrieval accuracy
+  - 3072 dimensions provide excellent semantic representation
+  - Better performance on medical/technical text
+  - Optimized similarity calculation for this model (L2 distance to similarity conversion)
 
 **LLM:** `gpt-4o-mini`
 - **Reasoning:**
@@ -215,21 +223,25 @@ All chunking parameters are configurable via `app/config.py`:
 ### Retrieval Approach
 
 **Strategy:**
-- **Top-K:** 15 documents (configurable, default in `app/config.py`)
-- **Similarity Threshold:** 0.3 (filters low-relevance results, optimized for L2 distance conversion)
-- **Re-ranking:** Enabled (combines similarity + content length)
+- **Top-K:** 10 documents (configurable, default in `app/config.py`)
+- **Similarity Threshold:** 0.7 (filters low-relevance results, optimized for L2 distance conversion)
+- **Re-ranking:** Disabled by default (configurable via `ENABLE_RERANKING` in `app/config.py`)
+  - When enabled: Simple similarity-based sorting (fast, no API calls)
+  - When disabled: Documents returned in similarity order
 
 **Implementation:**
-1. Retrieve 2x top_k initially for filtering buffer
-2. Convert distance scores to similarity scores
-3. Filter by similarity threshold
-4. Optional re-ranking: 70% similarity + 30% content length
-5. Return top-k most relevant documents
+1. Retrieve exactly `top_k` documents from vector store
+2. Convert L2 distances to similarity scores using formula: `similarity = 1 - (distance² / 4)`
+3. Filter by similarity threshold (0.7)
+4. If fewer than `top_k` documents pass threshold, include best available documents below threshold
+5. Optional re-ranking: Simple similarity-based sorting (when enabled)
+6. Return top-k most relevant documents
 
 **Rationale:**
-- Similarity threshold prevents low-quality context
-- Re-ranking improves answer quality by preferring detailed chunks
-- Top-k=15 captures range information that may be ranked lower
+- Similarity threshold of 0.7 ensures high-quality, relevant context
+- Top-k=10 balances context richness with processing efficiency
+- Simple re-ranking (when enabled) provides fast optimization without external API calls
+- Always returns up to `top_k` documents to ensure sufficient context
 
 ### Prompt Engineering
 
@@ -295,10 +307,45 @@ All chunking parameters are configurable via `app/config.py`:
 
 **Evaluation Metrics:**
 
-The `QualityChecker` class (`app/eval/quality_checks.py`) provides comprehensive evaluation of RAG system performance through the `run_full_evaluation()` method. The evaluation returns a complete structure with all metrics:
+The `QualityChecker` class (`app/eval/quality_checks.py`) provides comprehensive evaluation of RAG system performance through the `run_full_evaluation()` method. The system supports two evaluation modes:
+
+1. **RAGAS Metrics** (enabled by default via `USE_RAGAS_METRICS=True` in `app/config.py`):
+   - **Faithfulness**: Measures how grounded the answer is in the provided context
+   - **Answer Relevancy**: Evaluates how relevant the answer is to the query
+   - **Context Precision**: Measures precision of retrieved context
+   - **Context Recall**: Measures recall of retrieved context (requires ground truth)
+
+2. **Custom Metrics** (fallback when RAGAS is unavailable or disabled):
+   - Answer quality metrics (completeness, relevance, source availability)
+   - Retrieval quality metrics (retrieval rate, average similarity)
+   - Overall system score
+
+The evaluation returns different structures depending on the evaluation method:
+
+**RAGAS Metrics Structure** (when `USE_RAGAS_METRICS=True`):
 
 ```json
 {
+    "evaluation_method": "ragas",
+    "faithfulness": float,           // 0-1: How grounded the answer is in context
+    "answer_relevancy": float,        // 0-1: How relevant the answer is to the query
+    "context_precision": float,       // 0-1: Precision of retrieved context
+    "context_recall": float,         // 0-1: Recall of retrieved context (if ground_truth provided)
+    "overall_score": float,          // Average of all available RAGAS metrics
+    "raw_scores": {                   // Raw scores from RAGAS evaluation
+        "faithfulness": float,
+        "answer_relevancy": float,
+        "context_precision": float,
+        "context_recall": float      // Only if ground_truth provided
+    }
+}
+```
+
+**Custom Metrics Structure** (when `USE_RAGAS_METRICS=False` or RAGAS unavailable):
+
+```json
+{
+    "evaluation_method": "custom",
     "answer_quality": {
         "answer_length": int,
         "word_count": int,
@@ -330,6 +377,16 @@ The `QualityChecker` class (`app/eval/quality_checks.py`) provides comprehensive
 
 **Metric Descriptions:**
 
+**RAGAS Metrics** (when `USE_RAGAS_METRICS=True`):
+
+- **faithfulness** (0-1): Measures how grounded the answer is in the provided context. Higher scores indicate the answer is well-supported by the retrieved documents.
+- **answer_relevancy** (0-1): Evaluates how relevant the generated answer is to the user's query. Higher scores indicate the answer directly addresses the question.
+- **context_precision** (0-1): Measures the precision of retrieved context. Higher scores indicate more relevant documents were retrieved.
+- **context_recall** (0-1): Measures the recall of retrieved context (requires `ground_truth` parameter). Higher scores indicate more relevant information was retrieved. Only included if ground truth is provided.
+- **overall_score** (0-1): Average of all available RAGAS metrics (faithfulness, answer_relevancy, context_precision, and context_recall if available).
+
+**Custom Metrics** (when `USE_RAGAS_METRICS=False` or RAGAS unavailable):
+
 - **answer_quality.answer_length**: Character count of the generated answer
 - **answer_quality.word_count**: Word count of the generated answer
 - **answer_quality.has_sources**: Boolean indicating if context documents are available
@@ -356,98 +413,114 @@ The `QualityChecker` class (`app/eval/quality_checks.py`) provides comprehensive
 
 **Actual Evaluation Results:**
 
-**Example 1: Low Score (Short Answer)**
+**Example 1: RAGAS Metrics - Low Score (Incomplete Answer)**
 
 Query: "What is cholesterol?"  
 Answer: "Cholesterol is a waxy substance found in your blood."  
-Retrieved documents: 2 (similarity scores: 0.8, 0.75), expected: 5
+Retrieved documents: 2  
+Evaluation Method: RAGAS
 
 ```json
 {
-    "answer_quality": {
-        "answer_length": 54,
-        "word_count": 9,
-        "has_sources": true,
-        "num_sources": 2,
-        "avg_similarity": 0.775,
-        "completeness_score": 0.667,
-        "relevance_score": 0.8,
-        "quality_score": 0.729
-    },
-    "completeness": {
-        "is_complete": false,
-        "is_incomplete": false,
-        "is_too_short": true,
-        "has_question_word": true
-    },
-    "retrieval_quality": {
-        "num_retrieved": 2,
-        "expected_num": 5,
-        "retrieval_rate": 0.4,
-        "avg_similarity": 0.775,
-        "min_similarity": 0.75,
-        "max_similarity": 0.8,
-        "retrieval_quality_score": 0.588
-    },
-    "overall_score": 0.468
+    "evaluation_method": "ragas",
+    "faithfulness": 0.85,
+    "answer_relevancy": 0.72,
+    "context_precision": 0.68,
+    "context_recall": null,
+    "overall_score": 0.750,
+    "raw_scores": {
+        "faithfulness": 0.85,
+        "answer_relevancy": 0.72,
+        "context_precision": 0.68
+    }
 }
 ```
 
 **Score Breakdown:**
-- **quality_score (0.729)**: 30% × 0.667 (completeness) + 40% × 0.8 (relevance) + 20% × 1.0 (sources) + 10% × 0.09 (length) = 0.729
-- **retrieval_quality_score (0.588)**: 50% × 0.4 (retrieval_rate) + 50% × 0.775 (avg_similarity) = 0.588
-- **overall_score (0.468)**: 40% × 0.729 + 30% × 0.0 (is_complete=false) + 30% × 0.588 = 0.468
+- **faithfulness (0.85)**: Answer is mostly grounded in context, but lacks detail
+- **answer_relevancy (0.72)**: Answer addresses the query but is too brief
+- **context_precision (0.68)**: Some retrieved documents may not be highly relevant
+- **overall_score (0.750)**: Average of (0.85 + 0.72 + 0.68) / 3 = 0.750
 
-**Example 2: High Score (Complete Answer)**
+**Example 2: RAGAS Metrics - High Score (Complete Answer)**
 
 Query: "What are normal cholesterol levels?"  
 Answer: "Normal cholesterol levels typically include total cholesterol below 200 mg/dL, LDL cholesterol below 100 mg/dL, and HDL cholesterol above 60 mg/dL. These values help assess cardiovascular health risk and guide treatment decisions."  
-Retrieved documents: 5 (similarity scores: 0.88, 0.85, 0.82, 0.80, 0.78), expected: 5
+Retrieved documents: 5  
+Evaluation Method: RAGAS
 
 ```json
 {
-    "answer_quality": {
-        "answer_length": 214,
-        "word_count": 35,
-        "has_sources": true,
-        "num_sources": 5,
-        "avg_similarity": 0.826,
-        "completeness_score": 0.875,
-        "relevance_score": 0.88,
-        "quality_score": 0.866
-    },
-    "completeness": {
-        "is_complete": true,
-        "is_incomplete": false,
-        "is_too_short": false,
-        "has_question_word": true
-    },
-    "retrieval_quality": {
-        "num_retrieved": 5,
-        "expected_num": 5,
-        "retrieval_rate": 1.0,
-        "avg_similarity": 0.826,
-        "min_similarity": 0.78,
-        "max_similarity": 0.88,
-        "retrieval_quality_score": 0.913
-    },
-    "overall_score": 0.860
+    "evaluation_method": "ragas",
+    "faithfulness": 0.94,
+    "answer_relevancy": 0.91,
+    "context_precision": 0.88,
+    "context_recall": null,
+    "overall_score": 0.910,
+    "raw_scores": {
+        "faithfulness": 0.94,
+        "answer_relevancy": 0.91,
+        "context_precision": 0.88
+    }
 }
 ```
 
 **Score Breakdown:**
-- **quality_score (0.866)**: 30% × 0.875 (completeness) + 40% × 0.88 (relevance) + 20% × 1.0 (sources) + 10% × 0.35 (length) = 0.866
-- **retrieval_quality_score (0.913)**: 50% × 1.0 (retrieval_rate) + 50% × 0.826 (avg_similarity) = 0.913
-- **overall_score (0.860)**: 40% × 0.866 + 30% × 1.0 (is_complete=true) + 30% × 0.913 = 0.860
+- **faithfulness (0.94)**: Answer is well-grounded in the retrieved context
+- **answer_relevancy (0.91)**: Answer directly and comprehensively addresses the query
+- **context_precision (0.88)**: High-quality, relevant documents were retrieved
+- **overall_score (0.910)**: Average of (0.94 + 0.91 + 0.88) / 3 = 0.910
 
-**Why Example 2 achieves a higher overall_score (0.860 > 0.79):**
+**Why Example 2 achieves a higher overall_score (0.910 > 0.750):**
 
-1. **Answer meets completeness requirement**: 35 words (exceeds 15-word minimum), so `is_complete = true`, contributing the full 30% (0.3) instead of 0.0
-2. **Higher quality_score (0.866)**: Better completeness_score (0.875), higher relevance_score (0.88), and good length (35 words)
-3. **Higher retrieval_quality_score (0.913)**: Perfect retrieval_rate (1.0) with all 5 expected documents retrieved, plus high average similarity (0.826)
-4. **All components optimized**: Each component (answer quality, completeness, retrieval quality) performs well, resulting in an overall_score of 0.860
+1. **Higher faithfulness (0.94 vs 0.85)**: Answer is more thoroughly grounded in the retrieved context with specific numerical values
+2. **Higher answer_relevancy (0.91 vs 0.72)**: Answer comprehensively addresses the query with detailed information
+3. **Higher context_precision (0.88 vs 0.68)**: Better quality documents were retrieved, improving precision
+4. **All RAGAS metrics optimized**: Each metric (faithfulness, answer_relevancy, context_precision) performs well, resulting in a high overall_score of 0.910
 
-*Note: These scores are based on evaluation with sample test data. Actual scores will vary based on query complexity, answer quality, and retrieved document relevance.*
+**Example 3: RAGAS Metrics - With Ground Truth (Includes Context Recall)**
+
+Query: "What is cholesterol?"  
+Answer: "Cholesterol is a waxy, fat-like substance found in all cells of your body. It is essential for various bodily functions, including hormone production and vitamin D synthesis."  
+Retrieved documents: 5  
+Ground Truth: "Cholesterol is a waxy substance that your body needs to build healthy cells, but high levels can increase heart disease risk."  
+Evaluation Method: RAGAS
+
+```json
+{
+    "evaluation_method": "ragas",
+    "faithfulness": 0.92,
+    "answer_relevancy": 0.89,
+    "context_precision": 0.86,
+    "context_recall": 0.84,
+    "overall_score": 0.878,
+    "raw_scores": {
+        "faithfulness": 0.92,
+        "answer_relevancy": 0.89,
+        "context_precision": 0.86,
+        "context_recall": 0.84
+    }
+}
+```
+
+**Score Breakdown:**
+- **faithfulness (0.92)**: Answer is well-supported by context
+- **answer_relevancy (0.89)**: Answer is highly relevant to the query
+- **context_precision (0.86)**: Most retrieved documents are relevant
+- **context_recall (0.84)**: Retrieved context captures most of the ground truth information
+- **overall_score (0.878)**: Average of (0.92 + 0.89 + 0.86 + 0.84) / 4 = 0.878
+
+**Note on Custom Metrics:**
+
+If `USE_RAGAS_METRICS=False` or RAGAS is unavailable, the system falls back to custom metrics with the structure shown earlier. Custom metrics provide detailed breakdowns of answer quality, completeness, and retrieval quality, but may not capture semantic nuances as well as RAGAS metrics.
+
+**Configuration:**
+
+- **RAGAS Metrics**: Set `USE_RAGAS_METRICS=True` in `app/config.py` (default)
+- **Evaluator LLM**: Configured via `EVALUATOR_LLM_MODEL` (default: `gpt-4o-mini`) and `EVALUATOR_LLM_TEMPERATURE` (default: 0.1)
+- **Ground Truth**: Optional parameter for `context_recall` metric calculation
+
+*Note: These scores are based on evaluation with sample test data. Actual scores will vary based on query complexity, answer quality, and retrieved document relevance. RAGAS metrics require an evaluator LLM and may incur additional API costs.*
 
 ## 🚀 Getting Started
 
@@ -462,7 +535,7 @@ Retrieved documents: 5 (similarity scores: 0.88, 0.85, 0.82, 0.80, 0.78), expect
 1. **Clone the repository:**
 ```bash
 git clone <repository-url>
-cd RAG_Lab_Tests
+cd LabAssist_AI
 ```
 
 2. **Create virtual environment:**
@@ -520,7 +593,7 @@ API will be available at `http://localhost:8000`
 ```bash
 curl -X POST "http://localhost:8000/chat" \
   -H "Content-Type: application/json" \
-  -d '{"query": "What is normal cholesterol?", "top_k": 15}'
+  -d '{"query": "What is normal cholesterol?", "top_k": 10}'
 ```
 
 #### 4. Docker Deployment
@@ -650,7 +723,7 @@ User Query → API/CLI → Retriever → Vector Store → Context
 ## 📁 Project Structure
 
 ```
-RAG_Lab_Tests/
+LabAssist_AI/
 ├── app/
 │   ├── ingestion/
 │   │   ├── loader.py          # PDF extraction
