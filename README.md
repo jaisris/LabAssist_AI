@@ -12,56 +12,6 @@ This project implements a "Chat with Your Docs" application that can answer ques
 
 ![RAG System Architecture](./arch_diagram.png)
 
-*Visual representation of the RAG system architecture showing data flow from input through ingestion, RAG pipeline, interface, and quality evaluation.*
-
-```mermaid
-graph TB
-    subgraph "Input"
-        PDF[PDF Documents]
-        USER[User Queries]
-    end
-    
-    subgraph "Ingestion"
-        LOADER[PDF Loader]
-        CHUNKER[Chunker]
-        EMBED[Embeddings]
-        VDB[(ChromaDB)]
-    end
-    
-    subgraph "RAG Pipeline"
-        RETRIEVER[Retriever]
-        PROMPT[Prompt Builder]
-        LLM[LLM Generator]
-        GUARD[Guardrails]
-    end
-    
-    subgraph "Interface"
-        API[FastAPI]
-        CLI[CLI]
-    end
-    
-    subgraph "Quality"
-        QC[Quality Checker]
-    end
-    
-    PDF --> LOADER
-    LOADER --> CHUNKER
-    CHUNKER --> EMBED
-    EMBED --> VDB
-    
-    USER --> API
-    USER --> CLI
-    API --> RETRIEVER
-    CLI --> RETRIEVER
-    RETRIEVER --> VDB
-    RETRIEVER --> PROMPT
-    PROMPT --> LLM
-    LLM --> GUARD
-    GUARD --> QC
-    GUARD --> API
-    GUARD --> CLI
-```
-
 ### Architecture Overview
 
 The system follows a modular, layered architecture with clear separation of concerns:
