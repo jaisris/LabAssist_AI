@@ -10,6 +10,10 @@ This project implements a "Chat with Your Docs" application that can answer ques
 
 ### Architecture Diagram
 
+![RAG System Architecture](./arch_diagram.png)
+
+*Visual representation of the RAG system architecture showing data flow from input through ingestion, RAG pipeline, interface, and quality evaluation.*
+
 ```mermaid
 graph TB
     subgraph "Input"
